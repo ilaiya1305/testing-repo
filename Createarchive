@@ -1,0 +1,47 @@
+def call(Map params) {
+    // Set the folder to archive
+    switch(params.type) {
+        case "db":
+            folder = '.'
+        break
+        case "package":
+            folder = '.'
+        break
+        case "node":
+            folder = params.folder
+        break
+        case "xpression":
+            folder = params.folder
+        break
+        case "bash":
+            folder = '.'
+        break        
+        default:
+            folder = params.componentName
+        break
+    }
+    // Check if separate folder is available for creating zip package
+    if(params.separateFolder != 'empty') {
+        folder = params.separateFolder
+    }
+    // Add any filter if required
+    if(params.archiveFolder != null) {
+        if (isUnix()) {
+            folder = folder + "/" + params.archiveFolder
+        } else {
+            folder = folder + "\\" + params.archiveFolder
+        }
+    }
+    // Create the correct artefact type based on the packaging being requested
+    switch (params.packaging) {
+        case "zip":
+            zip dir: "${folder}", zipFile: "${params.artefact}", archive: false
+        break
+        case "tar.gz":
+            executeShellCommand("touch ${params.artefact};tar --exclude=${params.artefact} -czf ${params.artefact} ${folder}")
+        break
+        default:
+            error("Asked to create archive of folder " + folder + " with type of " + params.packaging + " but no command to do so")
+        break  
+    }  
+}
