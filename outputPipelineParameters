@@ -1,0 +1,26 @@
+// Output the pipeline parameters
+def call(Map params) {
+    def outputString = ""
+    def deployments = ""
+    outputString = outputString + "Pipeline parameters used:\n"
+
+    params.each {
+        if("$it.key" != "deploy") {
+            outputString = outputString + "$it.key : $it.value\n"
+        }
+    }
+
+    if(params.deploy != null) {
+        deployments = deployments + "Deployments:\n"
+        // Process deployment structure
+        params.deploy.each { item ->
+            deployments = deployments + "$item\n"
+        }
+    } else {
+        deployments = deployments + "No deployments for this build.\n"
+    }
+
+    outputString = outputString + deployments
+    
+    println outputString
+}
