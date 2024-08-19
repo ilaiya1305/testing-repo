@@ -1,0 +1,16 @@
+// Convert MS build tools results
+def call(Map params) {
+    // Find the coverage file
+    files = findFiles glob: "**\\*.coverage"
+
+    if(files.length == 0) {
+        println "No code coverage files found so no conversion possible"
+    } else {
+        // Replace slashes to escape correctly when running command and add a space to complete the conversion command
+        filename = files[0].path.replace("\\", "\\\\")
+        executeShellCommand(params.conversion + " " + "\"${filename}\"")
+    }
+
+    // Now clean up the CodeCoverage directory in the target folder to ensure it is not included in the upload
+    executeShellCommand("if exist \"${params.buildDirectory}\\${params.componentName}\\CodeCoverage\" rd /S /Q \"${params.buildDirectory}\\${params.componentName}\\CodeCoverage\"")
+}
