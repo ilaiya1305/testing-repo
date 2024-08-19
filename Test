@@ -1,0 +1,60 @@
+def call(Map userParms) {
+    //Set a map which will be populated by the below
+    def returnParams = [:]
+
+    //Define the current java version to default to
+    def default_java_version = 'java_1.8'
+    
+    //Define the latest java version supported for sonarqube 9.9.5
+    def default_java_version_new = 'java_1.17'
+
+    // Define the build tool to use
+    switch(userParms.type) {
+        case "dotnetNuget":
+            // map latest jdk supported for sonar scanner(agent server) of SQ 9.9.5 version
+            returnParams.jdk = userParms.get('jdk', default_java_version_new)        
+        case "dotnet":
+            // map in build tool, default the build tool to dotnet
+            returnParams.buildTool = userParms.get('buildTool', 'dotnet')
+            // map latest jdk supported for sonar scanner(agent server) of SQ 9.9.5 version
+            returnParams.jdk = userParms.get('jdk', default_java_version_new)        
+        break
+        case "biztalk":
+            // map in build tool, default the build tool to msbuild
+            returnParams.buildTool = userParms.get('buildTool', 'msbuild-biztalk')
+            // map in scan tool, default to sonar-msbuild
+            returnParams.scanTool = userParms.get('scanTool', 'sonar-biztalk')
+            // map latest jdk supported for sonar scanner(agent server) of SQ 9.9.5 version
+            returnParams.jdk = userParms.get('jdk', default_java_version_new)        
+        break
+        case "msbuild":
+            // map in build tool, default the build tool to msbuild
+            returnParams.buildTool = userParms.get('buildTool', 'msbuild')
+            // map in scan tool, default to sonar-msbuild
+            returnParams.scanTool = userParms.get('scanTool', 'sonar-msbuild')
+            // map latest jdk supported for sonar scanner(agent server) of SQ 9.9.5 version
+            returnParams.jdk = userParms.get('jdk', default_java_version_new)
+        break
+        case "node":
+            // map in build tool, default the build tool to dotnet
+            returnParams.buildTool = userParms.get('buildTool', 'nodejs')     
+            // map latest jdk supported for sonar scanner(agent server) of SQ 9.9.5 version
+            returnParams.jdk = userParms.get('jdk', default_java_version_new)
+        break
+    }
+    
+    //Default the JDK version if not proveded,jdk 8 will be used in legacy projects
+    returnParams.jdk = userParms.get('jdk', default_java_version)
+    
+    // Output the global settings to assist in debugging
+    def outputString = ""
+    outputString = outputString + "Global parameters set:\n"
+
+    returnParams.each {
+        outputString = outputString + "$it.key : $it.value\n"
+    }
+    
+    println outputString
+    
+    return returnParams
+}
