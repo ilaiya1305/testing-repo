@@ -1,0 +1,287 @@
+import groovy.json.JsonOutput
+def call(Map params, String branch, Map gitData, Map deploy_values) {
+    // Handle deployments with ansible tower
+
+    // We default to creating iterative releases requiring the devliery into all environments in sequence
+    def iterative = 'true'
+    // Flag to say if we have already created a jira issue, in which case we ignore any more as they will
+    // be created by the iterative deployments
+    def jira_issue_created = 'false'
+
+    // Set current deployment environment, we use this to see if there are multiple deployments for the 
+    // same environment, if so we need to run them all as they are linked.
+    def current_environment = ''
+
+    // If this is a production branch AND the last merge into this is a hotfix branch
+    // then we want to create ALL deployments are Jira tickets with a HOTFIX prefix.
+    // We also don't want these to be iterative and so set iterative to 'false'
+    def hotfix = 'false'
+    if(params.productionBranches.contains(branch)) {
+        println "production branch build, checking if this is a hotfix merge"
+        def hotfix_info = executeShellCommand("git show-branch -r --date-order --no-color", 'true').toLowerCase()
+        if(hotfix_info.contains('hotfix')) {
+            println hotfix_info
+            println "Hotfix build detected, converting all deployments to jira tickets for managed release process"
+            hotfix = 'true'
+            iterative = 'false'
+        } else {
+            println "Not a hotfix build, continuing as normal"
+        }
+    }
+
+    params.deploy.each { item ->
+        // Replace * with the regex value to allow the matches to function correctly 
+        // item.branch = item.branch.replace('*', '(.*)')
+        if(branch.matches(item.branch)) {
+            println "Have deployment for $branch"
+            def tower_info = [:]
+            tower_info.template = item.template
+            tower_info.inventory = item.get('inventory', "none")
+            tower_info.credentials = item.get('credentials', "none")
+            tower_info.tower = item.get('tower', 'Production')
+            tower_info.templateType = item.get('templateType', 'job')
+            def id = item.get('id', null)
+
+            def extra_vars = processExtraVars(item.extraVars, deploy_values)
+            
+            // The git_info is used to tell the deployment scripts what version of the deployment to use and from where.
+            // The iterative flag is used to tell them whether this is a one of deployment or part of an iterative delivery
+            def git_info = [ iterative: iterative, commitHash: gitData['GIT_COMMIT'], url: gitData['GIT_URL'] ]
+
+            // Define the environment information
+            def environment_info = [ environment: item.environment, repo: params.repoName, branch: branch ]
+            if(id != null) {
+                environment_info['id'] = id
+            }
+
+            // If this is the first one then the environment will be empty so set to the environment
+            if(current_environment == '' && item.type == 'jira') {
+                current_environment = item.environment
+            }
+
+            println "Tower information is \n$tower_info"
+            println "Extra vars are \n$extra_vars"
+            println "Git information is \n$git_info"
+
+            switch(item.type) {
+                case "jira":
+                    // If this deployment is for the current environment OR a hotfix then create a jira ticket
+                    if(hotfix == 'true' || item.environment == current_environment) {
+                        // Default the project to be the GDC Platform project but take passed in value if provided
+                        project_key = item.get('project', 'GDCPLAT')
+                        createIssue(hotfix, project_key, params.repoName, environment_info, deploy_values.version, tower_info, extra_vars, git_info)
+                    }
+                    break
+                case "auto":
+                    // If this is a hotfix then override the auto and create jira tickets, otherwise is an auto deploy
+                    if(hotfix == 'true') {
+                        println "Creating Jira ticket for automated deployment as is a hotfix build"
+                        // Default the project to be the GDC Platform project but take passed in value if provided
+                        project_key = item.get('project', 'GDCPLAT')
+                        createIssue(hotfix, project_key, params.repoName, environment_info, deploy_values.version, tower_info, extra_vars, git_info)
+                    } else {
+                        println "Triggering automatic deployment"
+                        if(tower_info.inventory != "none"){
+                            deployWithInventory(tower_info, extra_vars)
+                        }
+                        else {
+                            deployWithoutInventory(tower_info, extra_vars)
+                        }
+                    }
+                    break
+                default:
+                    println "Not proceeding with deployment as it has no valid type"
+                    break
+            }
+        }
+    } 
+}
+
+def createIssue(String hotfix, String project_key, String repo, Map environment_info, String version, Map tower_info, String extra_vars, Map git_info) {
+    println "Creating a Jira issue for deployment."
+    def date_time = new Date().format("dd/MM/yyyy HH:mm:ss")
+    def summary = ''
+    def id = environment_info.get('id', null)
+    if(hotfix == 'true') {
+        summary = 'HOTFIX - '
+    }
+
+    if(tower_info.template.startsWith('WV_Global_CLUW.VegaUI-')) {
+        template_short_name = tower_info.template.replaceAll('WV_Global_CLUW.VegaUI-', 'VegaUI-')
+        summary = summary + date_time + ' ' + template_short_name + ' '
+        if(id != null) {
+            summary = summary + id + ' '
+        }
+        summary = summary + version 
+    } else {
+        summary = summary + date_time + ' ' + repo + ' ' + environment_info.environment + ' '
+        if(id != null) {
+            summary = summary + id + ' '
+        }
+        summary = summary + version + ' ' + tower_info.template
+    }
+
+    // Create a deployment request in Jira for the first item in the deployments
+    // This is the intial version which was used in Jira Prod. 
+    // For migration to Global Jira, line numbers 126 - 144 has been commented 
+    // and line numbers 146 - 192 is active
+    // deploy_issue = [
+    //     fields: [ 
+    //         project: [key: project_key],
+    //         summary: summary,
+    //         description: 'Deployment generated from Jenkinsfile',
+    //         // Extra variables is 11910
+    //         customfield_11910: extra_vars,
+    //         // Tower information is 11912
+    //         customfield_11912: JsonOutput.toJson(tower_info),
+    //         // Environment is 11911
+    //         customfield_11911: JsonOutput.toJson(environment_info),
+    //         // Git information is 11909
+    //         customfield_11909: JsonOutput.toJson(git_info),
+    //         issuetype: [id: '10601']
+    //     ]
+    // ]
+
+    // response = jiraNewIssue issue: deploy_issue, site: 'Jira Production'
+    //https://eu.github.chubb.com/CHUBB/DevOps_Global_Common.JenkinsFile/pull/259
+    jira_site = 'Jira Global'
+
+    if (jira_site == 'Jira Global SIT') {
+        deploy_issue = [
+            fields: [ 
+                project: [key: project_key],
+                summary: summary,
+                description: 'Deployment generated from Jenkinsfile',
+                // Extra variables is 11910
+                customfield_21201: extra_vars,
+                // Tower information is 11912
+                customfield_21203: JsonOutput.toJson(tower_info),
+                // Environment is 11911
+                customfield_21200: JsonOutput.toJson(environment_info),
+                // Git information is 11909
+                customfield_21202: JsonOutput.toJson(git_info),
+                issuetype: [id: '14200']
+            ]
+        ]
+    } else if (jira_site == 'Jira Global') {
+        deploy_issue = [
+            fields: [ 
+                project: [key: project_key],
+                summary: summary,
+                description: 'Deployment generated from Jenkinsfile',
+                // Extra variables is 11910
+                customfield_26107: extra_vars,
+                // Tower information is 11912
+                customfield_26109: JsonOutput.toJson(tower_info),
+                // Environment is 11911
+                customfield_26106: JsonOutput.toJson(environment_info),
+                // Git information is 11909
+                customfield_26108: JsonOutput.toJson(git_info),
+                issuetype: [id: '16700']
+            ]
+        ]
+    }
+    else {
+        deploy_issue = [
+            fields: [ 
+                project: [key: project_key],
+                summary: summary,
+                description: 'Deployment generated from Jenkinsfile',
+                // Extra variables is 11910
+                customfield_11910: extra_vars,
+                // Tower information is 11912
+                customfield_11912: JsonOutput.toJson(tower_info),
+                // Environment is 11911
+                customfield_11911: JsonOutput.toJson(environment_info),
+                // Git information is 11909
+                customfield_11909: JsonOutput.toJson(git_info),
+                issuetype: [id: '10601']
+            ]
+        ]
+    }
+
+    response = jiraNewIssue issue: deploy_issue, site: jira_site
+
+    println response.successful.toString()
+    println response.data.toString()
+}
+
+def deployWithInventory(Map tower_info, String extra_vars) {
+    println "Deploying with inventory name - $tower_info.inventory"
+    if(tower_info.credentials != "none") {
+        ansibleTower(
+            towerServer: "${tower_info.tower}",
+            jobTemplate: "${tower_info.template}",
+            inventory: "${tower_info.inventory}",
+            credential: "${tower_info.credentials}",
+            verbose: true,
+            importTowerLogs: true,
+            removeColor: false,            
+            extraVars: "${extra_vars}"
+        )
+    } else {
+        ansibleTower(
+            towerServer: "${tower_info.tower}",
+            jobTemplate: "${tower_info.template}",
+            inventory: "${tower_info.inventory}",
+            verbose: true,
+            importTowerLogs: true,
+            removeColor: false,
+            extraVars: "${extra_vars}"
+        )
+    }
+}
+
+def deployWithoutInventory(Map tower_info, String extra_vars) {
+    println "Deploying with inventory set in Ansible Tower template"
+    if(tower_info.credentials != "none") {
+        ansibleTower(
+            towerServer: "${tower_info.tower}",
+            jobTemplate: "${tower_info.template}",
+            credential: "${tower_info.credentials}",
+            verbose: true,
+            importTowerLogs: true,
+            removeColor: false,
+            extraVars: "${extra_vars}"
+        )
+    } else {
+        if(tower_info.templateType == "workflow") {
+            ansibleTower(
+                towerServer: "${tower_info.tower}",
+                templateType: "${tower_info.templateType}",
+                jobTemplate: "${tower_info.template}",
+                verbose: true,
+                importTowerLogs: true,
+                removeColor: false,
+                extraVars: "${extra_vars}"
+            )
+        } else {
+            ansibleTower(
+                towerServer: "${tower_info.tower}",
+                jobTemplate: "${tower_info.template}",
+                verbose: true,
+                importTowerLogs: true,
+                removeColor: false,
+                extraVars: "${extra_vars}"
+            )
+        }
+    }
+}
+
+def processExtraVars(Map variables, Map deploy_values) {
+    if(variables == null) {
+        variables = [:]
+    }
+    if(deploy_values.url != null) {
+        variables.force_url = deploy_values.url
+    }
+    else {
+        variables.force_version = deploy_values.version
+        variables.force_repository = deploy_values.repository  
+    }
+
+    // Assign variable that can be referenced in Ansible builds to control processing
+    variables.jenkins_build = true;  
+
+    return JsonOutput.toJson(variables)
+}
