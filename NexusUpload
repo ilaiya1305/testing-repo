@@ -1,0 +1,119 @@
+def call(Map params, String branch, String server, String build_number) {
+    // Cater for branches that do not follow the naming convention and use capital letters
+    branch = branch.toLowerCase()
+    deployValues = null
+
+    // Check to see if this upload is permitted or not
+    if(checkUploadRules(params, branch) == 'true') {
+        // If this is a production banch then we need to upload to the Releases repository, otherwise the snapshots one
+        if(params.productionBranches.contains(branch)) {
+            // This is a production branch
+            repository = params.nexusPrefix + "_Releases"
+        } else {
+            // This is not a production branch
+            repository = params.nexusPrefix + "_Snapshots"
+        }
+
+        // Create the upload command
+        upload_command = null
+        switch(params.type) {
+            case "maven":
+                if (params.pomDefined != null) {
+                    if(params.uploadCommand != null) {
+                        upload_command = params.uploadCommand
+                    }
+                    else {
+                        upload_command = "mvn -B deploy -DskipTests"
+                    }
+                    // Use the pomDefined flag to know which variable we need to pass into the deploy command
+                    upload_command = upload_command + " -D${params.pomDefined}=${params.buildVersion} -DaltDeploymentRepository=nexus::default::${server}/repository/${repository}"
+                }
+            break
+            case "gradle":
+                if(params.uploadCommand != null) {
+                    upload_command = params.uploadCommand
+                }
+                else {
+                    upload_command = "gradle publish"
+                }
+                upload_command = upload_command +  " -g ${JENKINS_HOME}/gradle_home -PdeployRepoUrl=${server}/repository/${repository}"
+            break
+            case "dotnetNuget":
+                if(params.uploadCommand != null) {
+                    upload_command = params.uploadCommand
+                }
+                else {
+                    upload_command = "dotnet nuget push"
+                }
+                upload_command = upload_command + " \"${params.buildDirectory}\\${params.componentName}\\*.nupkg\" -k ${NEXUS_CREDENTIALS} -s ${server}/repository/${repository}"
+            break
+        }
+
+        // If upload command is still null then set as a deploy-file
+        if(upload_command == null) {
+            if(params.uploadCommand != null) {
+                upload_command = params.uploadCommand
+            }
+            else {
+                upload_command = "mvn -B deploy:deploy-file"
+            }
+            upload_command = upload_command + " -DrepositoryId=nexus -DgroupId=${params.groupID} -DartifactId=${params.componentName} -Dversion=${params.buildVersion} -Dpackaging=${params.packaging} -Dfile=${params.artefact} -Durl=${server}/repository/${repository}"
+        }
+
+
+        // Now run the upload
+        if (params.buildDirectory != null) {
+            dir(params.buildDirectory){
+                executeShellCommand(upload_command)
+            }
+        } else {
+            executeShellCommand(upload_command)
+        }
+
+        deployValues = [ version : params.buildVersion, repository : repository ]
+    } 
+
+    return deployValues
+
+}
+
+// Function to check if there are nexus upload inclusion or exclusion rules
+// No rules will upload all
+// If the branch is included then it will be uploaded, irresepective of any exlcusion rule
+// If there are inclusion rules and no exclusion rules then ONLY branches matched in the inclusion rules will be uploaded
+// If there are exclusion rules and no inclusion rules then branches will only NOT upload if matched in the exclusion
+def checkUploadRules(Map params, String branch) {
+    if (params.nexusInclude != null) {
+        // Inclusion rules exist so default to only uploading those that match
+        uploadPermitted = 'false'
+    } else {
+        // Default to uploading all
+        uploadPermitted = 'true'
+    }
+    // Replace * with the regex value to allow the matches to function correctly  
+    if (params.nexusInclude != null) {
+        params.nexusInclude.each { item ->
+            replaceItem = item.replace('*', '(.*)')
+            println "Checking include for branch $branch with item $replaceItem"
+            if (branch.matches(item.replace('*', '(.*)'))) {
+                println "Match, allowing upload"
+                // Branch matches inclusion rule so allow upload
+                uploadPermitted = 'true'
+            }
+        }
+    } else {
+        if (params.nexusExclude != null) {
+            params.nexusExclude.each { item ->
+                replaceItem = item.replace('*', '(.*)')
+                println "Checking exclude for branch $branch with item $replaceItem"
+                if (branch.matches(item.replace('*', '(.*)'))) {
+                    println "Match, preventing upload"
+                    // Branch matches an exlusion rule to disabled upload
+                    uploadPermitted = 'false'
+                }
+            }
+        }
+    }
+    println "Nexus rule check for branch $branch, returning $uploadPermitted"
+    return uploadPermitted
+}
