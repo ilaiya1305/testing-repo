@@ -1,0 +1,32 @@
+def call(String command, String outputRequired = 'false', String returnStatus = 'false') {
+    // Create generic handler to run commands
+    if (isUnix()) {
+        if(outputRequired == 'false') {
+            if(returnStatus == 'false') {
+                sh command
+            } else {
+                sh(returnStatus: true, script: command)
+            }  
+        } else {
+            if(returnStatus == 'false') {
+                sh(returnStdout: true, script: command).trim()
+            } else {
+                sh(returnStdout: true, returnStatus: true, script: command).trim()
+            }
+        }
+    } else {
+        if(outputRequired == 'false') {
+            if(returnStatus == 'false') {
+                bat command
+            } else {
+                bat(returnStatus: true, script: command)
+            }  
+        } else {
+            if(returnStatus == 'false') {
+                bat(returnStdout: true, script: command).trim()
+            } else {
+                bat(returnStdout: true, returnStatus: true, script: command).trim()
+            }
+        }
+    }
+}
