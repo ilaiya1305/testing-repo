@@ -1,0 +1,403 @@
+import groovy.json.JsonOutput
+pipeline {    
+    agent { 
+        label "maven&&java"
+    }
+    
+    stages {
+        stage('Deploy') {
+            steps {
+                script {
+                    //Parse the incoming JSON to create useable structures
+                    tower_info = readJSON text: "${tower_info}"
+                    git_info = readJSON text: "${git_info}"
+                    environment_info = readJSON text: "${environment_info}"
+
+                    echo "Run deployment for environment ${environment_info['environment']} with tower\n ${tower_info} and extra_vars\n ${extra_vars}"
+                    jiraAddComment idOrKey: "${env.JIRA_ISSUE_KEY}", comment: "Deployment log can be found in below Jenkins URL:", site: 'Jira Global'
+       
+                    project_key = "${env.JIRA_ISSUE_KEY}".split('-')[0]
+                    echo "Project key is ${project_key}"
+
+                    echo "Have deployment values:"
+                    echo "Template - ${tower_info['template']}"
+                    echo "Inventory - ${tower_info['inventory']}"
+                    echo "Credentials - ${tower_info['credentials']}"
+                    echo "Tower - ${tower_info['tower']}"
+                    echo "ExtraVars - ${extra_vars}"
+                    echo "Git information"
+                    echo "Iterative - ${git_info['iterative']}"
+                    echo "commitHash - ${git_info['commitHash']}"
+                    echo "url - ${git_info['url']}"
+
+                    //Process extra vars to get version and repostitory being used for this deployment cycle
+                    extra_vars_map = readJSON text: "${extra_vars}"
+                    force_version = extra_vars_map.force_version
+                    force_repository = extra_vars_map.force_repository
+                    force_url = extra_vars_map.force_url
+
+                    // Run the tower deployment
+                    if("${tower_info['inventory']}" != "none"){
+                            deployWithInventory(tower_info, extra_vars)
+                    } else {
+                        deployWithoutInventory(tower_info, extra_vars)
+                    }
+                }
+            }
+        }
+        stage('Update Issue') {
+            steps {
+                script {
+                    echo "Transitioning with Deployment Complete"
+                    transitionInput = [transition: [id: '31']]
+                    jiraTransitionIssue idOrKey: "${env.JIRA_ISSUE_KEY}", input: transitionInput, site: 'Jira Global'
+                }
+            }
+        }
+        stage('Iterate deployment') {
+            when { 
+                expression { "${git_info['iterative']}" == 'true' }
+            }
+            steps {
+                script {
+                    echo "Iterative flag set, checking for the next deployment, if it exists"
+                    // Checkout the application repository at the correct commit to read in the Jenkinsfile
+                    checkout([
+                        $class: 'GitSCM', 
+                        branches: [[name: "${git_info['commitHash']}" ]], 
+                        userRemoteConfigs: [[url: "${git_info['url']}", credentialsId: '2547f1a4-0e5d-466f-81f9-9e525fa7039e']]
+                    ])
+
+                    // Read in the Jenkinsfile
+                    def properties = readFile 'Jenkinsfile'
+
+                    // Process for deployment
+                    def deployments = processJenkinsfile(properties, environment_info)
+
+                    // Create the Jira issues
+                    if(deployments.size() != 0) {
+                        deployments.each { deployment ->
+                            echo "Creating Jira ticket for deployment to environment ${deployment['environment']}"
+                            // Update the environment information with the new deployment 
+                            environment_info.environment = deployment.environment
+
+                            // Create the issue summary for the kanban board
+                            def date_time = new Date().format("dd/MM/yyyy HH:mm:ss")
+                            def summary = ''
+              
+                            // Replace deployment values with those required
+                            tower_info.template = deployment.template
+                            tower_info.inventory = deployment.get('inventory', "none")
+                            tower_info.credentials = deployment.get('credentials', "none")
+                            tower_info.tower = deployment.get('tower', 'Production')
+                            println "Setting Project key - $deployment.project"
+                            project_key = "${deployment.project}"
+
+                            // Add the force values to the extra_vars
+                            def deployment_vars_map = [:]
+                            def deployment_extra_vars = deployment.get('extra_vars', 'none')
+                            if(deployment_extra_vars != 'none') {
+                                deployment_vars_map = deployment_extra_vars
+                            }
+                            if(force_url == null || force_url == 'null' || force_url == "none") {
+                                deployment_vars_map['force_version'] = force_version
+                                deployment_vars_map['force_repository'] = force_repository  
+                            }
+                            else {
+                                deployment_vars_map['force_url'] = force_url
+                                artefact_url_split = force_url.split('/')
+                                force_version = artefact_url_split.last()
+                            }
+                            deployment_vars_map['jenkins_build'] = true
+              
+                            if(tower_info.template.startsWith('WV_Global_CLUW.VegaUI-')) {
+                                template_short_name = tower_info.template.replaceAll('WV_Global_CLUW.VegaUI-', 'VegaUI-')
+                                if(environment_info.id == null || environment_info.id == 'null' || environment_info.id == "none") {
+                                    summary = date_time + ' ' + template_short_name + ' ' + force_version
+                                } else {
+                                    summary = date_time + ' ' + template_short_name + ' ' + environment_info.id + ' ' + force_version
+                                }
+                            } else {
+                                if(environment_info.id == null || environment_info.id == 'null' || environment_info.id == "none") {
+                                    summary = date_time + ' ' + environment_info.repo + ' ' + environment_info.environment + ' ' + force_version + ' ' + tower_info.template
+                                } else {
+                                    summary = date_time + ' ' + environment_info.repo + ' ' + environment_info.environment + ' ' + environment_info.id + ' ' + force_version + ' ' + tower_info.template
+                                }
+              }
+                        
+                            // Create a deployment request in Jira
+                            deploy_issue = [
+                                fields: [ 
+                                    project: [key: project_key],
+                                    summary: summary,
+                                    description: 'Deployment generated from Jenkinsfile',
+                                    // Extra variables is 11910 in GDC Jira. Below value is equivalent one in Jira Global Server
+                                    customfield_26107: deployment_vars_map,
+                                    // Tower information is 11912 in GDC Jira. Below value is equivalent one in Jira Global Server
+                                    customfield_26109: JsonOutput.toJson(tower_info),
+                                    // Environment is 11911 in GDC Jira. Below value is equivalent one in Jira Global Server
+                                    customfield_26106: JsonOutput.toJson(environment_info),
+                                    // Git information is 11909 in GDC Jira. Below value is equivalent one in Jira Global Server
+                                    customfield_26108: JsonOutput.toJson(git_info),
+                                    issuetype: [id: '16700']
+                                ]
+                            ]
+                        
+                            response = jiraNewIssue issue: deploy_issue, site: 'Jira Global'
+                        
+                            println response.successful.toString()
+                            println response.data.toString()
+                        }
+                    }
+                }
+            }
+        }    
+    }
+    post {
+        failure {
+            script {
+                echo "Transitioning with Failed Deployment"
+                transitionInput = [transition: [id: '41']]
+                jiraTransitionIssue idOrKey: "${env.JIRA_ISSUE_KEY}", input: transitionInput, site: 'Jira Global'
+            }
+        }
+    }
+}
+
+def deployWithInventory(Map tower_info, String extra_vars) {
+    println "Deploying with inventory name - $tower_info.inventory"
+    if(tower_info.credentials != "none") {
+        ansibleTower(
+            towerServer: "${tower_info.tower}",
+            jobTemplate: "${tower_info.template}",
+            inventory: "${tower_info.inventory}",
+            credential: "${tower_info.credentials}",
+            verbose: true,
+            importTowerLogs: true,
+            extraVars: "${extra_vars}"
+        )
+    } else {
+        ansibleTower(
+            towerServer: "${tower_info.tower}",
+            jobTemplate: "${tower_info.template}",
+            inventory: "${tower_info.inventory}",
+            verbose: true,
+            importTowerLogs: true,
+            extraVars: "${extra_vars}"
+        )
+    }
+}
+
+def deployWithoutInventory(Map tower_info, String extra_vars) {
+    println "Deploying with inventory set in Ansible Tower template"
+    if(tower_info.credentials != "none") {
+        ansibleTower(
+            towerServer: "${tower_info.tower}",
+            jobTemplate: "${tower_info.template}",
+            credential: "${tower_info.credentials}",
+            verbose: true,
+            importTowerLogs: true,
+            extraVars: "${extra_vars}"
+        )
+    } else {
+        if(tower_info.templateType == "workflow") {
+            ansibleTower(
+                towerServer: "${tower_info.tower}",
+                templateType: "${tower_info.templateType}",
+                jobTemplate: "${tower_info.template}",
+                verbose: true,
+                importTowerLogs: true,
+                extraVars: "${extra_vars}"
+            )
+        } else {
+            ansibleTower(
+                towerServer: "${tower_info.tower}",
+                jobTemplate: "${tower_info.template}",
+                verbose: true,
+                importTowerLogs: true,
+                extraVars: "${extra_vars}"
+            )
+        }
+    }
+}
+
+// Disable the Jenkins CPS to allow correct iteration
+@NonCPS
+def processJenkinsfile(String contents, Map current_deployment) {
+    echo "Processing Jenkinsfile for deployments"
+    // Iterate through and look for deploy, then track the objects using the [ and ]
+    // Map to hold all deployments
+    def all_deployments = []
+    // Map to hold the current deployment
+    def deployment = [:]
+
+    // Map and flag for extra_vars
+    def extra_vars = [:]
+    def processing_extra_vars = 0
+    
+    // Flag to note start of deployment section
+    def build_deployments = 0
+    // The depth value shows nesting
+    // 0 means outside of (end) the deployment section
+    // 1 means inside deployments section
+    // 2 means inside a deployment
+    def depth = 0
+    
+    // Iterate through each line
+    contents.eachLine { line, count ->
+        // Find the start of the deployment section and flag when found
+        if(line.contains('deploy')) {
+            echo "Found start of deployment section"
+            build_deployments = 1
+        }
+        // If withn the deployments section
+        if(build_deployments == 1) {
+            // A [ begins the deployment section and each deployment.
+            if(line.contains('[')) {
+                // Increment the depth
+                depth = depth + 1
+                echo "Entering section depth ${depth}"
+                if(depth == 2) {
+                    echo "Start of deployment"
+                    // Reset the deployment map
+                    deployment = [:]
+                    // Reset additional variables as well
+                    extra_vars = [:]
+                } else if(depth == 3) {
+                    // This could be a nested variable, like extraVars and so needs processing
+                    // Look for extraVars
+                    if(line.contains('extraVars')) {
+                        echo "Found start of extraVars"
+                        processing_extra_vars = 1
+                    } else {
+                        error "Unexpected [ with no matching variable to handle. Please ensure [ is on same line as variable as per Readme. Offending line is number ${count}"
+                    }
+                }
+            }
+            // A ] ends a section
+            if(line.contains(']')) {
+                if(depth > 0) {
+                    depth = depth - 1
+                    echo "Exiting section depth to ${depth}"
+                    if(depth == 2) {
+                        // Left a variable section so process
+                        if(processing_extra_vars == 1) {
+                            echo "Finished processing extra_vars"
+                            processing_extra_vars = 0
+                        } else {
+                            error "Exiting variable block of depth 3 but no variable being constructed, please check deploy structure. Line ${count}"
+                        }
+                    } else if(depth == 1) {
+                        echo "End of deployment"
+                        if(extra_vars.size() > 0) {
+                            echo "Adding extra_vars to the deployment"
+                            deployment.extra_vars = extra_vars
+                        }
+                        all_deployments.add(deployment)
+                    } else if(depth == 0) {
+                        echo "End of all deployments section"
+                        build_deployments = 0
+                    }
+                }
+            }
+            // Now look for key value pairs
+            def values = line.split(':')
+            // If we have a length greater than one then we have a pair
+            if(values.length > 1) {
+                // Trim whitespace to make the values correct
+                def key = values[0].trim()
+                def value = values[1].trim().replaceAll("'","").replaceAll(",\$", "")
+                if(depth == 2) {
+                    // Expecting a deployment definition and so need these values to build a deployment map
+                    echo "Adding value to deployment map - ${key} : ${value}"
+                    deployment[key] = value
+                } else if(depth == 3) {
+                    // Processing variable section
+                    if(processing_extra_vars == 1) {
+                        if(line.contains('extraVars')) {
+                            // Skip the extraVars: [ line
+                            echo "Skipping first line in extraVars"
+                        } else {
+                            echo "Adding value to extra_vars - ${key} : ${value}"
+                            extra_vars[key] = value
+                        }
+                    } else {
+                        error "Processing key:value in depth 3 but no variable being constructed, please check deploy structure. Line ${count}"
+                    }
+                } else {
+                    // Did not expect to find anything here so raise it
+                    echo "Found key value pair outside of a definition ${key} - ${value}. Number ${count}. Line ${line}"
+                }
+            }
+        }
+    }
+    // Now all the deployments have been created, pass back the next one.
+    // Flag to see if the current deployment has been found
+    def found_current_deployment = 0
+    def next_environment = ''
+    def return_deployments = []
+    if(current_deployment.id == null || current_deployment.id == 'null') {
+        current_deployment.id = "none"
+    }
+    def current_id = current_deployment.get('id', 'none')
+    for(Map item : all_deployments) {
+        if(item.id == null || item.id == 'null') {
+            item.id = "none"
+        }
+        def item_id = item.get('id', 'none')
+        if(found_current_deployment == 0) {
+            echo "Looking for deployment ${current_deployment.environment} for branch ${current_deployment.branch}"
+            if(item.environment.contains(current_deployment.environment) && item.branch.contains(current_deployment.branch)) {
+                // Environment and branch matches, if there is an id then that needs to match as well
+                if(current_id != 'none') {
+                    if(item_id != 'none') {
+                        if(current_id.toString() == item_id.toString()){
+                            echo "Found current deployment - ${current_deployment.environment} - for branch ${current_deployment.branch} with id ${current_id}"
+                            found_current_deployment = 1
+                        }
+                    }
+                } else {
+                    if(item_id == 'none') {
+                        echo "Found current deployment - ${current_deployment.environment} - for branch ${current_deployment.branch}"
+                        found_current_deployment = 1
+                    }
+                }
+            }
+        } else {
+            // A deployment matching the current one has been found so need to process these
+            // Is this next deployment for the same branch, in which case we need to process
+            if(item.branch.contains(current_deployment.branch)) {
+                // Is this deployment for a different environment, if so then process otherwise ignore as any parallel operations will have been managed earlier in the pipeline
+                if(item.environment != current_deployment.environment) {
+                    // Store the next environment to process for if this is the first match
+                    if(next_environment == '') {
+                        next_environment = item.environment
+                        echo "Setting next environment to ${next_environment}"
+                    }
+                    // Only process if the environment is correct
+                    if(item.environment == next_environment) {
+                        // If there is no id the next deployment then create 
+                        // If there is an id in the next deployment then only create if the current deployment has the same id 
+                        // Does the next deployment have an id
+                        if(item_id != 'none') {
+                            // It does so does the current deployment have an id
+                            if(current_id != 'none') {
+                                // It does, so are they the same
+                                if(item_id.toString() == current_id.toString()) {
+                                    // They are so we want this one
+                                    echo "Adding next deployment with matching id"
+                                    return_deployments.add(item)
+                                }
+                            }
+                        } else {
+                            // The next deployment does not have an id, so we need this one
+                            echo "Adding next deployment with no id"
+                            return_deployments.add(item)
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return return_deployments
+}
