@@ -1,0 +1,21 @@
+def call(Map pipelineParams){
+
+  def exception = null
+  def find_files = findFiles(glob: '**/ansible.properties*.yaml').collect{it.name}
+  echo "Yaml files: ${find_files}"
+    find_files.each {
+         file -> 
+        try{
+          def config_yml = readYaml file: "$file"   
+          echo "ansible properties YAML verified"
+          file_status = true
+        }
+        catch(FileNotFoundException e1){
+          exception = e1.message;
+        } 
+        catch(Exception e2){
+          currentBuild.result = 'ABORTED'
+          error("Malformed ansible properties YAML detected:\n${e2}")
+        }
+    }
+}
