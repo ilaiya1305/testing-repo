@@ -1,0 +1,49 @@
+// Set the version number to the correct format to use throughout the build process
+def call(Map params) {
+    def version = params.version
+    // If we have no version then we cannot proceed with the build so error here
+    if(version == null) {
+        error("null version sent to setBuildVersion")
+    }
+    // Cater for branches that do not follow the naming convention and use capital letters
+    branch = "${env.BRANCH_NAME}".toLowerCase()
+
+    // If this is a production branch then we need to create release version numbers, otherwise snapshot
+    if(params.productionBranches.contains(branch)) {
+        // Strip -SNAPSHOT from version if it exists to allow branch name to be injected but alert to inform the developers
+        if(version.contains('-SNAPSHOT')) {
+            println "WARNING - The current version, $version, contains -SNAPSHOT. This is a reserved word for NON PRODUCTION builds. Please remove for future builds."
+            println "Stripping -SNAPSHOT from production version to attempt to resolve build issue."
+            version = version.replaceAll('-SNAPSHOT', '')
+        }
+        // Production branch
+        if (branch != "master") {
+            // Add branch name if not master to allow mutliple named versions
+            version = version + "-" + branch
+            if (params.suffixBuildNumberForProdBranch != null) {
+                if (params.suffixBuildNumberForProdBranch.contains('true')) {
+                    println "Appending -RC<BUILD_NUMBER> to version of the build from production branch which is non-master."
+                    version = version + "-RC" + "${env.BUILD_NUMBER}"
+                }
+            }
+        }
+    } else {
+        // Not a production branch so need to add SNAPSHOT
+        // Strip -SNAPSHOT from version if it exists to allow branch name to be injected
+        version = version.replaceAll('-SNAPSHOT', '')
+    
+      // Overides the default behavior of branch name to be injected into version.
+        if (params.overrideBranchInNexusVersion != null) {
+            if (params.overrideBranchInNexusVersion.contains('true')) {
+                version = version + "-SNAPSHOT"
+            }
+        }
+        else if (branch == "develop") {
+            version = version + "-SNAPSHOT"
+        } else {
+            version = version + "-" + branch + "-SNAPSHOT"
+        }
+    }
+    // Return the generated version
+    return version
+}
