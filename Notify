@@ -1,0 +1,253 @@
+def call(Map pipelineParams) {
+
+//defining variables for script
+
+def  reponame = pipelineParams.repoName.toLowerCase()
+def  cause = currentBuild.getBuildCauses()[0].shortDescription
+def buildstatus = currentBuild.currentResult
+def bgColor = buildstatus.equals("SUCCESS") ? "green" : buildstatus.equals("FAILURE") ? "red" : buildstatus.equals("ABORTED") ? "GoldenRod" : "Gray"
+
+//condition to add allure report 
+
+if (pipelineParams.notify_to != null && (reponame.contains('testautomation')||reponame.contains('testing'))) {
+                emailext  attachLog: true, compressLog: true, 
+                body:
+                """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+</head>
+<body>
+<style>
+table {
+  border-collapse: collapse;
+  width: 100%;
+}
+td, th {
+  border: 1px solid #dddddd;
+  text-align: left;
+  padding: 8px;
+}
+table, th, td {
+    font-family: Calibri, Verdana, Helvetica, sans serif;
+    font-size: 12px;
+    color: black;
+    border-bottom: 1px solid #ddd;
+} 
+.td-title-main {
+    color: white;
+    font-size: 200%;
+    padding-left: 5px;
+    font-weight: bold;
+}
+</style>
+<table>
+    <tr style="background-color:${bgColor};">
+      <td class="td-title-main" colspan=2>
+        BUILD ${currentBuild.currentResult}
+      </td>
+    </tr>
+  <tr>
+    <td>Project</td>
+    <td>${env.JOB_BASE_NAME}</td>
+  </tr>
+  <tr>
+    <td>Build Number</td>
+    <td>${env.BUILD_NUMBER}</td>
+  </tr>
+  <tr>
+    <td>Date</td>
+    <td>${BUILD_TIMESTAMP}</td>
+  </tr>
+  <tr>
+    <td>Build URL</td>
+    <td>${BUILD_URL}</td>
+  </tr>
+  <tr>
+    <td>Allure dashboard</td>
+    <td>${env.BUILD_URL}allure/</td>
+  </tr>
+  <tr>
+    <td>Cause</td>
+    <td>${cause}</td>
+  </tr>
+</table>
+<div><p class=MsoNormal><span style='font-size:10.0pt;font-family:"Georgia",serif'>Regards<o:p></o:p></span></p><p class=MsoNormal><img width=100 height=10 style='width:1.0416in;height:.1083in' id="_x0000_i1026" src="
+http://www.chubb.com/common/images/CHUBB_Logo_Purple.png"
+alt="Chubb Logo"><br><br><b><span style='font-size:10.0pt;font-family:"Georgia",serif;color:black'>COG DevOps, Shared Services</span></b><span style='font-size:10.0pt;font-family:"Georgia",serif;color:black'><o:p></o:p></p><a href="
+mailto:
+cogsharedservices-devops@chubb.com?Subject=Support on Jenkins" target="_top">Need Support</a></span></div>
+</body></html>""",
+mimeType:
+'text/html',
+subject: "${currentBuild.currentResult} Jenkins Build: ${env.JOB_NAME}", from: "noreply-COG-Devops@chubb.com", to: "${pipelineParams.notify_to}"
+}
+
+//condition for CITS repo - to attach html file
+
+else if (pipelineParams.notify_to != null && reponame.equals('aca_global_anh.automationtestsuite'))
+{
+def path="${WORKSPACE}/${pipelineParams.projectLocation}/Results/TestExecution/${pipelineParams.releaseName}/${pipelineParams.testSet}/Latest"
+dir(path){
+emailext (
+subject:
+"${currentBuild.currentResult} Jenkins Build: ${env.JOB_NAME}",
+from:
+"noreply-COG-Devops@devops.com",
+body:
+"""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+</head>
+<body>
+<style>
+table {
+  border-collapse: collapse;
+  width: 100%;
+}
+td, th {
+  border: 1px solid #dddddd;
+  text-align: left;
+  padding: 8px;
+}
+table, th, td {
+    font-family: Calibri, Verdana, Helvetica, sans serif;
+    font-size: 12px;
+    color: black;
+    border-bottom: 1px solid #ddd;
+} 
+.td-title-main {
+    color: white;
+    font-size: 200%;
+    padding-left: 5px;
+    font-weight: bold;
+}
+</style>
+<table>
+    <tr style="background-color:${bgColor};">
+      <td class="td-title-main" colspan=2>
+        BUILD ${currentBuild.currentResult}
+      </td>
+    </tr>
+  <tr>
+    <td>Project</td>
+    <td>${env.JOB_BASE_NAME}</td>
+  </tr>
+  <tr>
+    <td>Build Number</td>
+    <td>${env.BUILD_NUMBER}</td>
+  </tr>
+  <tr>
+    <td>Date</td>
+    <td>${BUILD_TIMESTAMP}</td>
+  </tr>
+  <tr>
+    <td>Build URL</td>
+    <td>${BUILD_URL}</td>
+  </tr>
+  <tr>
+    <td>Cause</td>
+    <td>${cause}</td>
+  </tr>
+</table>
+<div><p class=MsoNormal><span style='font-size:10.0pt;font-family:"Georgia",serif'>Regards<o:p></o:p></span></p><p class=MsoNormal><img width=100 height=10 style='width:1.0416in;height:.1083in' id="_x0000_i1026" src="
+http://www.chubb.com/common/images/CHUBB_Logo_Purple.png"
+alt="Chubb Logo"><br><br><b><span style='font-size:10.0pt;font-family:"Georgia",serif;color:black'>COG DevOps, Shared Services</span></b><span style='font-size:10.0pt;font-family:"Georgia",serif;color:black'><o:p></o:p></p><a href="
+mailto:
+cogsharedservices-devops@devops.com?Subject=Support on Jenkins" target="_top">Need Support</a></span></div>
+</body></html>""",
+mimeType:
+'text/html',
+to:
+"${pipelineParams.notify_to}", attachmentsPattern: '*.html' )
+}
+}
+
+//condition for all repos which had emailid added in jenkins.properties file
+
+else if(pipelineParams.notify_to != null)
+{
+                emailext  attachLog: true, compressLog: true, 
+                body:
+                """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+</head>
+<body>
+<style>
+table {
+  border-collapse: collapse;
+  width: 100%;
+}
+td, th {
+  border: 1px solid #dddddd;
+  text-align: left;
+  padding: 8px;
+}
+table, th, td {
+    font-family: Calibri, Verdana, Helvetica, sans serif;
+    font-size: 12px;
+    color: black;
+    border-bottom: 1px solid #ddd;
+} 
+.td-title-main {
+    color: white;
+    font-size: 200%;
+    padding-left: 5px;
+    font-weight: bold;
+}
+</style>
+<table>
+    <tr style="background-color:${bgColor};">
+      <td class="td-title-main" colspan=2>
+        BUILD ${currentBuild.currentResult}
+      </td>
+    </tr>
+  <tr>
+    <td>Project</td>
+    <td>${env.JOB_BASE_NAME}</td>
+  </tr>
+  <tr>
+    <td>Build Number</td>
+    <td>${env.BUILD_NUMBER}</td>
+  </tr>
+  <tr>
+    <td>Date</td>
+    <td>${BUILD_TIMESTAMP}</td>
+  </tr>
+  <tr>
+    <td>Build URL</td>
+    <td>${BUILD_URL}</td>
+  </tr>
+  <tr>
+    <td>Cause</td>
+    <td>${cause}</td>
+  </tr>
+</table>
+<div><p class=MsoNormal><span style='font-size:10.0pt;font-family:"Georgia",serif'>Regards<o:p></o:p></span></p><p class=MsoNormal><img width=100 height=10 style='width:1.0416in;height:.1083in' id="_x0000_i1026" src="
+http://www.chubb.com/common/images/CHUBB_Logo_Purple.png"
+alt="Chubb Logo"><br><br><b><span style='font-size:10.0pt;font-family:"Georgia",serif;color:black'>COG DevOps, Shared Services</span></b><span style='font-size:10.0pt;font-family:"Georgia",serif;color:black'><o:p></o:p></p><a href="
+mailto:
+cogsharedservices-devops@devops.com?Subject=Support on Jenkins" target="_top">Need Support</a></span></div>
+</body></html>""",
+mimeType:
+'text/html',
+subject: "${currentBuild.currentResult} Jenkins Build: ${env.JOB_NAME}", from: "noreply-COG-Devops@chubb.com", to: "${pipelineParams.notify_to}"
+}
+else
+{
+    println("Add email address to get email notification")
+}
+
+//microsoft teams notification
+
+if(pipelineParams.teams_webhook_url != null){
+office365ConnectorSend status: "${currentBuild.currentResult}", message: "**Build URL**: **${env.BUILD_URL}** <br>**Remark:** ${cause}", color: "#AF0000", webhookUrl: "${pipelineParams.teams_webhook_url}"
+}
+
+}
